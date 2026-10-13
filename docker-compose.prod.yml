@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: recsys-redis-prod
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - recsys-prod-net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: recsys-fastapi-prod
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - APP_ENV=production
+      - LOG_LEVEL=info
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    restart: on-failure
+    networks:
+      - recsys-prod-net
+
+networks:
+  recsys-prod-net:
+    driver: bridge
+
+volumes:
+  redis_prod_data:
+    driver: local

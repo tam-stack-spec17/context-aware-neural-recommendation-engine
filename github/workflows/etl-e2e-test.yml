@@ -1,0 +1,112 @@
+
+name: ETL End-to-End Verification
+
+on:
+  push:
+    branches:
+      - "praveen/etl-e2e-verification"
+
+permissions:
+  contents: read
+
+jobs:
+  test-etl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PySpark
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pyspark==3.5.8"
+
+      - name: Create sample transaction CSV
+        run: |
+          mkdir -p data/raw data/processed
+          cat > data/raw/transactions_train.csv <<'CSV'
+          t_dat,customer_id,article_id,price,sales_channel_id
+          2020-09-01,cust_001,art_101,0.025,2
+          2020-09-02,cust_002,art_102,0.050,1
+          CSV
+
+      - name: Run ETL pipeline
+        run: |
+          python src/etl/ingest_transactions.py \
+            --input data/raw/transactions_train.csv \
+            --output data/processed/transactions.parquet
+
+      - name: Verify Parquet output
+        run: |
+          test -d data/processed/transactions.parquet
+          python - <<'PY'
+          from pyspark.sql import SparkSession
+          from pyspark.sql.types import (
+              DateType, DoubleType, IntegerType, StringType
+          )
+
+          spark = (
+              SparkSession.builder
+              .appName("VerifyParquetOutput")
+              .master("local[2]")
+              .getOrCreate()
+          )
+
+          try:
+              df = spark.read.parquet(
+                  "data/processed/transactions.parquet"
+              )
+
+              expected_types = {
+                  "t_dat": DateType,
+                  "customer_id": StringType,
+                  "article_id": StringType,
+                  "price": DoubleType,
+                  "sales_channel_id": IntegerType,
+              }
+
+              assert df.count() == 2, "Expected exactly 2 records"
+
+              actual_types = {
+                  field.name: type(field.dataType)
+                  for field in df.schema.fields
+              }
+
+              assert actual_types == expected_types, (
+                  f"Unexpected schema: {df.schema}"
+              )
+
+              rows = [
+                  row.asDict()
+                  for row in df.orderBy("customer_id").collect()
+              ]
+
+              assert rows[0]["customer_id"] == "cust_001"
+              assert rows[0]["article_id"] == "art_101"
+              assert rows[0]["price"] == 0.025
+              assert rows[0]["sales_channel_id"] == 2
+
+              assert rows[1]["customer_id"] == "cust_002"
+              assert rows[1]["article_id"] == "art_102"
+              assert rows[1]["price"] == 0.050
+              assert rows[1]["sales_channel_id"] == 1
+
+              print("PASS: Parquet output exists.")
+              print("PASS: Both records were read back correctly.")
+              print("PASS: All five column types are correct.")
+              print("END-TO-END ETL VERIFICATION PASSED.")
+          finally:
+              spark.stop()
+          PY
